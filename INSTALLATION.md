@@ -12,19 +12,24 @@ so **a reseller account is required** ("No reseller panel → no WHMCS support")
 
 ---
 
-## 1. In the xiProx reseller panel
+## 1. In the xiProx reseller panel → **API** tab
 
-1. **Create a "WHMCS" API key.** Reseller → API keys → new key with the
-   `reseller:*` scopes (read, write, wallet:read, renewal, customers:read/write,
-   **slots:read/slots:write**). Copy the key — it's shown once.
-2. **Configure the WHMCS webhook.** Reseller → WHMCS integration:
-   - **Callback URL:** `https://<your-whmcs>/modules/servers/xiproxcloud/webhook.php`
+Everything is managed for you under **Reseller → API → WHMCS API** (you do NOT
+use the generic API keys in Settings):
+
+1. **Generate WHMCS API Key** — click it. The key is shown **once**; copy it.
+   (This is a managed, reseller-scoped key.)
+2. **Suspension webhook:**
+   - Enter your **WHMCS webhook URL**:
+     `https://<your-whmcs>/modules/servers/xiproxcloud/webhook.php` → **Save**.
    - Click **Generate salt** and copy the **webhook salt**.
-
-   (API equivalents: `PUT /api/v1/reseller/whmcs` with `{ "callbackUrl": "…", "regenerateSalt": true }`,
-   and `GET /api/v1/reseller/whmcs` to read the salt back.)
+3. Step 3 on that page shows exactly what to paste into WHMCS (hostname, etc.).
 
 Keep the **API key** and the **webhook salt** — you'll paste both into WHMCS next.
+
+> API equivalents (if you prefer automation): `POST /api/v1/reseller` key mgmt is
+> handled in-panel; webhook via `PUT /api/v1/reseller/whmcs`
+> (`{ "callbackUrl": "…", "regenerateSalt": true }`) and `GET` to read the salt.
 
 ---
 
@@ -91,6 +96,26 @@ names so the module reads them at order time:
 
 The **root/proxy password** defaults to the WHMCS-generated service password, so
 Reinstall / Reset Password stay in sync with what WHMCS shows the customer.
+
+### OS template ids (for "Default OS" / the `OS Template` field)
+
+Use these ids as the value of **Default OS** (module setting) or the customer's
+`OS Template` field. This is the built-in catalog — the authoritative, live list
+is always `GET /api/v1/reseller/catalog` (`osTemplates`).
+
+| Id | Operating system |
+| -- | ---------------- |
+| `ubuntu-2404` | Ubuntu 24.04 LTS |
+| `ubuntu-2204` | Ubuntu 22.04 LTS |
+| `debian-12` | Debian 12 |
+| `rocky-9` | Rocky Linux 9 |
+| `alma-9` | AlmaLinux 9 |
+| `windows-2022` | Windows Server 2022 |
+
+**IP pool ids** aren't fixed — they're per-panel. Fetch them from
+`GET /api/v1/reseller/catalog` (`ipPools`, each with its `series` + monthly price)
+and use the id for **Default IP Pool** / the `IP Pool` field. Leave blank to let
+the panel pick the cheapest pool for the plan's series.
 
 ---
 

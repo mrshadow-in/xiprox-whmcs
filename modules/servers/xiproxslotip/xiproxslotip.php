@@ -49,12 +49,15 @@ function xiproxslotip_ConfigOptions(): array
         'FriendlyName' => 'Plan',
         'Type' => 'text',
         'Size' => '40',
-        'Description' => 'Slot IP plan id (couldn\'t reach the panel — paste from GET /api/v1/reseller/slot-plans).',
+        'Description' => 'Slot IP plan id — paste from GET /api/v1/reseller/slot-plans.',
     ];
+    $hint = '';
 
     try {
         $client = Helper::clientFromAnyServer('xiproxslotip');
-        if ($client) {
+        if (!$client) {
+            $hint = 'No xiProx server found — add one under Setup › Products/Services › Servers (Type: xiProx Slot IP), then reopen this product.';
+        } else {
             $plans = $client->get('/slot-plans');
             $opts = [];
             foreach ($plans as $p) {
@@ -72,10 +75,17 @@ function xiproxslotip_ConfigOptions(): array
                     'Options' => $opts,
                     'Description' => 'Slot IP plan — fetched live from your xiProx panel.',
                 ];
+            } else {
+                $hint = 'Connected, but the panel returned no active slot plans.';
             }
         }
     } catch (\Throwable $e) {
-        // Keep the text fallback.
+        $hint = 'Couldn\'t reach the panel: ' . $e->getMessage();
+        Helper::log('ConfigOptions', 'GET /slot-plans', $e->getMessage());
+    }
+
+    if ($hint !== '' && ($planField['Type'] ?? '') === 'text') {
+        $planField['Description'] .= ' — ' . $hint;
     }
 
     return [

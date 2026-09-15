@@ -52,12 +52,15 @@ function xiproxcloud_ConfigOptions(): array
         'FriendlyName' => 'Plan',
         'Type' => 'text',
         'Size' => '40',
-        'Description' => 'Reseller plan id (couldn\'t reach the panel to list plans — paste the id from GET /api/v1/reseller/plans).',
+        'Description' => 'Reseller plan id — paste from GET /api/v1/reseller/plans.',
     ];
+    $hint = '';
 
     try {
-        $client = Helper::clientFromAnyServer();
-        if ($client) {
+        $client = Helper::clientFromAnyServer('xiproxcloud');
+        if (!$client) {
+            $hint = 'No xiProx server found — add one under Setup › Products/Services › Servers (Type: xiProx Cloud), then reopen this product.';
+        } else {
             $plans = $client->get('/plans');
             $opts = [];
             foreach ($plans as $p) {
@@ -78,10 +81,18 @@ function xiproxcloud_ConfigOptions(): array
                     'Options' => $opts,
                     'Description' => 'Reseller plan — fetched live from your xiProx panel.',
                 ];
+            } else {
+                $hint = 'Connected, but the panel returned no active plans.';
             }
         }
     } catch (\Throwable $e) {
-        // Keep the text fallback.
+        // Surface WHY, so the admin isn't left guessing (also logged).
+        $hint = 'Couldn\'t reach the panel: ' . $e->getMessage();
+        Helper::log('ConfigOptions', 'GET /plans', $e->getMessage());
+    }
+
+    if ($hint !== '' && ($planField['Type'] ?? '') === 'text') {
+        $planField['Description'] .= ' — ' . $hint;
     }
 
     return [
