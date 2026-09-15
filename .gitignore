@@ -1,0 +1,27 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE and Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment & credentials
+.env
+.env.*
+*.local
+
+# Logs and databases
+*.log
+
+# Composer & dependencies (if added later)
+/vendor/
+/node_modules/
