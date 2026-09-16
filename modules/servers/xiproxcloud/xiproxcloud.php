@@ -183,6 +183,7 @@ function xiproxcloud_CreateAccount(array $params): string
             return 'Deploy did not return a VM id.';
         }
         Helper::setRemoteId($params, $vmId);
+        Helper::setIpPool($params, $ipPoolId); // remember the deploy pool (drives rotate-on-upgrade)
         if (!empty($res['customer']['id'])) {
             Helper::setCustomerId($params, (string) $res['customer']['id']);
         }
@@ -234,7 +235,14 @@ function xiproxcloud_TerminateAccount(array $params): string
     }
 }
 
-/** Upgrade/downgrade → POST /vms/{id}/plan with the target plan id. */
+/**
+ * Upgrade/Downgrade path. Handles BOTH:
+ *   - a plan change  → POST /vms/{id}/plan
+ *   - an IP-pool change → POST /vms/{id}/ips/rotate  (this is how IP rotation is
+ *     done — through WHMCS's upgrade/config flow, NOT an instant client button,
+ *     so it goes through ordering/billing). Rotation fires only when the
+ *     selected "IP Pool" differs from the one currently on record.
+ */
 function xiproxcloud_ChangePackage(array $params): string
 {
     try {
@@ -242,12 +250,29 @@ function xiproxcloud_ChangePackage(array $params): string
         if ($vmId === '') {
             return 'This service has no provisioned VM yet.';
         }
+        $client = Helper::client($params);
+
+        // 1) Plan change. A config-only upgrade re-sends the current plan, which
+        //    the panel rejects as "already on that plan" — that's fine, ignore it.
         $planId = (string) Helper::setting($params, 'Plan');
-        if ($planId === '') {
-            return 'No target plan configured.';
+        if ($planId !== '') {
+            try {
+                $client->post('/vms/' . rawurlencode($vmId) . '/plan', ['newResellerPlanId' => $planId]);
+            } catch (ApiException $e) {
+                if (!in_array($e->getApiCode(), ['validation_error', 'conflict'], true)) {
+                    throw $e;
+                }
+            }
         }
-        $res = Helper::client($params)->post('/vms/' . rawurlencode($vmId) . '/plan', ['newResellerPlanId' => $planId]);
-        Helper::log('ChangePackage', ['vmId' => $vmId, 'plan' => $planId], $res);
+
+        // 2) IP-pool change → rotate to the newly selected pool (reseller wallet).
+        $newPool = Helper::orderValue($params, 'IP Pool', '');
+        if ($newPool !== '' && $newPool !== Helper::getIpPool($params)) {
+            $client->post('/vms/' . rawurlencode($vmId) . '/ips/rotate', ['ipPoolId' => $newPool]);
+            Helper::setIpPool($params, $newPool);
+            Helper::log('ChangePackage', 'rotate-ip', ['vmId' => $vmId, 'pool' => $newPool]);
+        }
+
         return 'success';
     } catch (\Throwable $e) {
         return $e->getMessage();
@@ -258,7 +283,13 @@ function xiproxcloud_ChangePackage(array $params): string
 
 function xiproxcloud_ClientArea(array $params): array
 {
-    $vars = ['vmId' => '', 'vm' => null, 'panelUrl' => '', 'error' => ''];
+    $vars = [
+        'vmId' => '', 'vm' => null, 'panelUrl' => '', 'error' => '',
+        // Credentials the customer manages with. Root password tracks the WHMCS
+        // service password (deploy + reinstall set it), so it's always in sync.
+        'username' => 'root',
+        'password' => (string) ($params['password'] ?? ''),
+    ];
     try {
         $vmId = Helper::getRemoteId($params);
         $vars['vmId'] = $vmId;
@@ -287,7 +318,7 @@ function xiproxcloud_ClientArea(array $params): array
     ];
 }
 
-/** Client-area action buttons. */
+/** Client-area action buttons. (IP rotation is done via Upgrade/Config, not here.) */
 function xiproxcloud_ClientAreaCustomButtonArray(): array
 {
     return [
@@ -295,8 +326,50 @@ function xiproxcloud_ClientAreaCustomButtonArray(): array
         'Stop' => 'Stop',
         'Restart' => 'Restart',
         'Reinstall' => 'Reinstall',
-        'Rotate IP' => 'RotateIp',
     ];
+}
+
+/** Admin-area action buttons (Products/Services → the service → Module Commands). */
+function xiproxcloud_AdminCustomButtonArray(): array
+{
+    return [
+        'Sync to White-label Panel' => 'SyncUser',
+    ];
+}
+
+/**
+ * Sync User — link this WHMCS client to the reseller's white-label panel and
+ * assign this VM to them. For VMs deployed BEFORE the reseller added a
+ * white-label panel (so no customer was created at deploy time). Idempotent.
+ */
+function xiproxcloud_SyncUser(array $params): string
+{
+    try {
+        $vmId = Helper::getRemoteId($params);
+        if ($vmId === '') {
+            return 'This service has no provisioned VM yet.';
+        }
+        $client = Helper::client($params);
+
+        // Already assigned on the panel? Just record it.
+        $vm = $client->get('/vms/' . rawurlencode($vmId));
+        $existing = (string) ($vm['assignedCustomerId'] ?? '');
+        if ($existing !== '') {
+            Helper::setCustomerId($params, $existing);
+            return 'success';
+        }
+
+        $customerId = Helper::ensureWhitelabelCustomer($params, $client);
+        if ($customerId === '') {
+            return 'Could not create the customer — is your white-label panel active and does the client have an email?';
+        }
+        $client->post('/vms/' . rawurlencode($vmId) . '/assign', ['customerId' => $customerId]);
+        Helper::setCustomerId($params, $customerId);
+        Helper::log('SyncUser', $vmId, ['customerId' => $customerId]);
+        return 'success';
+    } catch (\Throwable $e) {
+        return $e->getMessage();
+    }
 }
 
 function xiproxcloud_Start(array $params): string
@@ -329,26 +402,6 @@ function xiproxcloud_Reinstall(array $params): string
         }
         $res = Helper::client($params)->post('/vms/' . rawurlencode($vmId) . '/actions', $body);
         Helper::log('Reinstall', $vmId, $res);
-        return 'success';
-    } catch (\Throwable $e) {
-        return $e->getMessage();
-    }
-}
-
-/** Rotate the primary IP within the service's configured pool (reseller wallet). */
-function xiproxcloud_RotateIp(array $params): string
-{
-    try {
-        $vmId = Helper::getRemoteId($params);
-        if ($vmId === '') {
-            return 'This service has no provisioned VM yet.';
-        }
-        $ipPoolId = Helper::orderValue($params, 'IP Pool', (string) Helper::setting($params, 'Default IP Pool', ''));
-        if ($ipPoolId === '') {
-            return 'No IP pool configured to rotate into.';
-        }
-        $res = Helper::client($params)->post('/vms/' . rawurlencode($vmId) . '/ips/rotate', ['ipPoolId' => $ipPoolId]);
-        Helper::log('RotateIp', ['vmId' => $vmId, 'pool' => $ipPoolId], $res);
         return 'success';
     } catch (\Throwable $e) {
         return $e->getMessage();

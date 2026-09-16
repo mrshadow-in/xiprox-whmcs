@@ -168,6 +168,7 @@ function xiproxslotip_CreateAccount(array $params): string
             return 'Deploy did not return a slot id.';
         }
         Helper::setSlotId($params, $slotId);
+        Helper::setIpPool($params, $ipPoolId); // remember the deploy pool (drives rotate-on-upgrade)
         if (!empty($res['customer']['id'])) {
             Helper::setCustomerId($params, (string) $res['customer']['id']);
         }
@@ -214,7 +215,9 @@ function xiproxslotip_TerminateAccount(array $params): string
 
 function xiproxslotip_ClientArea(array $params): array
 {
-    $vars = ['slotId' => '', 'slot' => null, 'panelUrl' => '', 'error' => ''];
+    // Proxy password tracks the WHMCS service password (deploy + Reset Password
+    // set it), so showing it here is always in sync.
+    $vars = ['slotId' => '', 'slot' => null, 'panelUrl' => '', 'error' => '', 'password' => (string) ($params['password'] ?? '')];
     try {
         $slotId = Helper::getSlotId($params);
         $vars['slotId'] = $slotId;
@@ -241,13 +244,76 @@ function xiproxslotip_ClientArea(array $params): array
 
 function xiproxslotip_ClientAreaCustomButtonArray(): array
 {
+    // IP rotation is done via Upgrade/Config (change the "IP Pool" option), not here.
     return [
         'Start' => 'Start',
         'Stop' => 'Stop',
         'Reset User' => 'ResetUser',
         'Reset Password' => 'ResetPassword',
-        'Rotate IP' => 'RotateIp',
     ];
+}
+
+/** Admin-area action buttons (the service → Module Commands). */
+function xiproxslotip_AdminCustomButtonArray(): array
+{
+    return [
+        'Sync to White-label Panel' => 'SyncUser',
+    ];
+}
+
+/** Link this WHMCS client to the white-label panel + assign this slot. Idempotent. */
+function xiproxslotip_SyncUser(array $params): string
+{
+    try {
+        $slotId = Helper::getSlotId($params);
+        if ($slotId === '') {
+            return 'This service has no provisioned slot yet.';
+        }
+        $client = Helper::client($params);
+
+        $slot = $client->get('/slots/' . rawurlencode($slotId));
+        $existing = (string) ($slot['assignedSubuserId'] ?? '');
+        if ($existing !== '') {
+            Helper::setCustomerId($params, $existing);
+            return 'success';
+        }
+
+        $customerId = Helper::ensureWhitelabelCustomer($params, $client);
+        if ($customerId === '') {
+            return 'Could not create the customer — is your white-label panel active and does the client have an email?';
+        }
+        $client->post('/slots/' . rawurlencode($slotId) . '/assign', ['customerId' => $customerId]);
+        Helper::setCustomerId($params, $customerId);
+        Helper::log('SyncUser', $slotId, ['customerId' => $customerId]);
+        return 'success';
+    } catch (\Throwable $e) {
+        return $e->getMessage();
+    }
+}
+
+/**
+ * Upgrade/Config path → rotate the Slot IP when the selected "IP Pool" differs
+ * from the one on record (charged to the reseller wallet). This is how IP
+ * rotation is triggered — through WHMCS ordering, not an instant client button.
+ */
+function xiproxslotip_ChangePackage(array $params): string
+{
+    try {
+        $slotId = Helper::getSlotId($params);
+        if ($slotId === '') {
+            return 'This service has no provisioned slot yet.';
+        }
+        $order = xiproxslotip_settingOrder();
+        $newPool = Helper::orderValue($params, 'IP Pool', (string) Helper::setting($params, 'Default IP Pool', '', $order));
+        if ($newPool !== '' && $newPool !== Helper::getIpPool($params)) {
+            Helper::client($params)->post('/slots/' . rawurlencode($slotId) . '/action', ['action' => 'rotate-ip', 'ipPoolId' => $newPool]);
+            Helper::setIpPool($params, $newPool);
+            Helper::log('ChangePackage', 'rotate-ip', ['slotId' => $slotId, 'pool' => $newPool]);
+        }
+        return 'success';
+    } catch (\Throwable $e) {
+        return $e->getMessage();
+    }
 }
 
 function xiproxslotip_Start(array $params): string
@@ -298,29 +364,6 @@ function xiproxslotip_ResetPassword(array $params): string
             'password' => (string) ($params['password'] ?? ''),
         ]);
         Helper::log('ResetPassword', $slotId, $res);
-        return 'success';
-    } catch (\Throwable $e) {
-        return $e->getMessage();
-    }
-}
-
-function xiproxslotip_RotateIp(array $params): string
-{
-    try {
-        $slotId = Helper::getSlotId($params);
-        if ($slotId === '') {
-            return 'This service has no provisioned slot yet.';
-        }
-        $order = xiproxslotip_settingOrder();
-        $ipPoolId = Helper::orderValue($params, 'IP Pool', (string) Helper::setting($params, 'Default IP Pool', '', $order));
-        if ($ipPoolId === '') {
-            return 'No IP pool configured to rotate into.';
-        }
-        $res = Helper::client($params)->post('/slots/' . rawurlencode($slotId) . '/action', [
-            'action' => 'rotate-ip',
-            'ipPoolId' => $ipPoolId,
-        ]);
-        Helper::log('RotateIp', ['slotId' => $slotId, 'pool' => $ipPoolId], $res);
         return 'success';
     } catch (\Throwable $e) {
         return $e->getMessage();

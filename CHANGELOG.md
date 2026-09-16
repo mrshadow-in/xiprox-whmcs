@@ -3,6 +3,22 @@
 All notable changes to the xiProx WHMCS modules are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Sync User** admin action (both modules) — link a WHMCS client to the reseller
+  white-label panel and assign an existing service to them, for services
+  deployed before white-label was set up. Backed by a new
+  `POST /api/v1/reseller/slots/[id]/assign` endpoint.
+- **Username + password** shown in the client-area manage section (Show toggle);
+  tracks the WHMCS service password.
+
+### Changed
+- **IP rotation moved off the instant client button to the Upgrade/Config path**:
+  change the `IP Pool` configurable option via WHMCS Upgrade/Downgrade → the
+  module rotates to the new pool (only when it actually changes). The deploy pool
+  is remembered in a per-service custom field.
+
 ## [1.0.0] — 2026-09-15
 
 ### Added

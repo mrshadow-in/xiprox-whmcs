@@ -7,11 +7,13 @@ xiProx **reseller API** (`/api/v1/reseller/*`); a reseller account is required.
 ## Modules
 
 - **`xiproxcloud`** — VM provisioning. Create / Suspend / Unsuspend / Terminate,
-  Change Package, and client-area **Start / Stop / Restart / Reinstall / Rotate
-  IP**, plus one-click **SSO** into your white-label panel. Live plan dropdown.
+  Change Package, and client-area **Start / Stop / Restart / Reinstall**, plus
+  one-click **SSO** into your white-label panel. Live plan dropdown. **IP rotation
+  via the Upgrade/Config path** (change the `IP Pool` option). Admin **Sync User**
+  action to link pre-white-label services to a customer.
 - **`xiproxslotip`** — Slot IP provisioning. Same lifecycle plus **Reset user /
-  Reset password / Rotate IP**. Charged to the reseller wallet. Shares the VM
-  module's client library.
+  Reset password**, IP rotation via Upgrade/Config. Charged to the reseller
+  wallet. Shares the VM module's client library.
 
 ## Highlights
 

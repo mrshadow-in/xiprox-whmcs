@@ -135,12 +135,30 @@ Top the wallet up and the panel emits `vm.resumed`; the service reactivates.
 
 ---
 
-## 6. Test it end to end
+## 6. Day-2 operations
+
+- **Client area (customer):** status, IP, specs, **username + password** (with a
+  Show toggle — the root/proxy password tracks the WHMCS service password),
+  **Open Control Panel** (one-time SSO), and the action buttons: VM →
+  Start / Stop / Restart / Reinstall; Slot IP → Start / Stop / Reset user /
+  Reset password.
+- **Rotate IP is NOT an instant button** — it's done through the **Upgrade/Config
+  path**. Make **`IP Pool`** a configurable option on the product; when the
+  customer changes it via *Upgrade/Downgrade Options* and pays, the module
+  rotates the IP to the newly selected pool (charged to your reseller wallet).
+  Rotation only fires when the pool actually changes.
+- **Sync User (admin):** open the service in the WHMCS admin area → **Module
+  Commands → "Sync to White-label Panel"**. Use this for services that were
+  deployed **before** you set up your white-label panel — it creates (or finds)
+  the customer on your panel and assigns this VM/slot to them, so they get panel
+  SSO. Idempotent and safe to click again.
+
+## 7. Test it end to end
 
 1. Place an order → **Create** deploys a reseller VM/Slot IP and (if you run a
    white-label panel) creates + assigns the customer.
-2. Open the service in the client area → status, IP, specs, **Open Control
-   Panel** (one-time SSO), and the action buttons.
+2. Open the service in the client area → status, IP, specs, credentials, **Open
+   Control Panel** (one-time SSO), and the action buttons.
 3. **Terminate** removes it and refunds the prorated remainder to your wallet.
 
 ---

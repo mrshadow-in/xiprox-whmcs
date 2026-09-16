@@ -21,6 +21,7 @@ class Helper
     public const FIELD_VM_ID = 'xiProx VM ID';
     public const FIELD_SLOT_ID = 'xiProx Slot ID';
     public const FIELD_CUSTOMER_ID = 'xiProx Customer ID';
+    public const FIELD_IP_POOL = 'xiProx IP Pool';
 
     public static function client(array $params): ApiClient
     {
@@ -144,6 +145,16 @@ class Helper
         return self::readField($params, self::FIELD_CUSTOMER_ID);
     }
 
+    public static function getIpPool(array $params): string
+    {
+        return self::readField($params, self::FIELD_IP_POOL);
+    }
+
+    public static function setIpPool(array $params, string $value): void
+    {
+        self::writeField($params, self::FIELD_IP_POOL, $value);
+    }
+
     public static function setCustomerId(array $params, string $value): void
     {
         self::writeField($params, self::FIELD_CUSTOMER_ID, $value);
@@ -191,6 +202,42 @@ class Helper
         } else {
             Capsule::table('tblcustomfieldsvalues')->insert(['fieldid' => $fid, 'relid' => $serviceId, 'value' => $value]);
         }
+    }
+
+    /**
+     * Resolve the white-label customer id for this WHMCS client on the reseller
+     * panel: create them, or find the existing one by email if they already
+     * exist. Returns '' if the client has no email or the panel has no active
+     * white-label domain (create will fail then). Used by the "Sync User" action.
+     */
+    public static function ensureWhitelabelCustomer(array $params, ApiClient $client): string
+    {
+        $cd = $params['clientsdetails'] ?? [];
+        $email = (string) ($cd['email'] ?? '');
+        if ($email === '') {
+            return '';
+        }
+        $name = trim(((string) ($cd['firstname'] ?? '')) . ' ' . ((string) ($cd['lastname'] ?? '')));
+
+        try {
+            $c = $client->post('/customers', ['email' => $email, 'name' => $name !== '' ? $name : $email]);
+            if (!empty($c['id'])) {
+                return (string) $c['id'];
+            }
+        } catch (ApiException $e) {
+            // Most likely the customer already exists — fall through to lookup.
+        }
+
+        try {
+            foreach ($client->get('/customers') as $cust) {
+                if (is_array($cust) && strcasecmp((string) ($cust['email'] ?? ''), $email) === 0) {
+                    return (string) ($cust['id'] ?? '');
+                }
+            }
+        } catch (\Throwable $e) {
+            // ignore
+        }
+        return '';
     }
 
     // ── Misc ──────────────────────────────────────────────────────────────

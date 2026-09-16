@@ -41,6 +41,13 @@
                             <td><strong>Proxy username</strong></td>
                             <td>{if $slot.proxyUsername}<code>{$slot.proxyUsername|escape}</code>{else}—{/if}</td>
                         </tr>
+                        <tr>
+                            <td><strong>Proxy password</strong></td>
+                            <td>
+                                <code id="xiprox-pw" data-pw="{$password|escape}">••••••••</code>
+                                <a href="#" onclick="var e=document.getElementById('xiprox-pw');if(e.textContent==='••••••••'){e.textContent=e.getAttribute('data-pw');this.textContent='Hide';}else{e.textContent='••••••••';this.textContent='Show';}return false;" style="margin-left:8px;font-size:12px;">Show</a>
+                            </td>
+                        </tr>
                         {if $slot.plan}
                         <tr>
                             <td><strong>Plan</strong></td>

@@ -61,6 +61,17 @@
                             <td>{(($vm.bandwidth.ingressBytes + $vm.bandwidth.egressBytes)/1073741824)|string_format:"%.2f"} GB of {$vm.bandwidth.allowanceGb} GB</td>
                         </tr>
                         {/if}
+                        <tr>
+                            <td><strong>Username</strong></td>
+                            <td><code>{$username|escape}</code></td>
+                        </tr>
+                        <tr>
+                            <td><strong>Password</strong></td>
+                            <td>
+                                <code id="xiprox-pw" data-pw="{$password|escape}">••••••••</code>
+                                <a href="#" onclick="var e=document.getElementById('xiprox-pw');if(e.textContent==='••••••••'){e.textContent=e.getAttribute('data-pw');this.textContent='Hide';}else{e.textContent='••••••••';this.textContent='Show';}return false;" style="margin-left:8px;font-size:12px;">Show</a>
+                            </td>
+                        </tr>
                         {if $vm.nextChargeAt}
                         <tr>
                             <td><strong>Next renewal</strong></td>
