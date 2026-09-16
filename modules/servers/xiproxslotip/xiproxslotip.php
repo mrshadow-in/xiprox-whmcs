@@ -250,7 +250,7 @@ function xiproxslotip_ClientArea(array $params): array
         Helper::log('ClientArea', 'GET /slots/' . ($vars['slotId'] ?? ''), $e->getMessage());
     }
 
-    return ['templatefile' => 'overview', 'vars' => $vars];
+    return ['tabOverviewReplacementTemplate' => 'templates/overview', 'templateVariables' => $vars];
 }
 
 function xiproxslotip_ClientAreaCustomButtonArray(): array

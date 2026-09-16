@@ -325,8 +325,8 @@ function xiproxcloud_ClientArea(array $params): array
     }
 
     return [
-        'templatefile' => 'overview',
-        'vars' => $vars,
+        'tabOverviewReplacementTemplate' => 'templates/overview',
+        'templateVariables' => $vars,
     ];
 }
 
