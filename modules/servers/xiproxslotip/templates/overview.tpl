@@ -73,6 +73,8 @@
                         <a href="{$panelUrl|escape}" target="_blank" rel="noopener" class="btn btn-primary btn-block">
                             <i class="fas fa-external-link-alt"></i> Open Control Panel
                         </a>
+                    {elseif $ssoError}
+                        <p class="text-muted" style="font-size:12px;">Panel login unavailable: {$ssoError|escape}</p>
                     {/if}
                     <p class="text-muted" style="margin-top:8px;font-size:12px;">
                         Use the buttons above to Start, Stop, Reset the proxy user/password, or Rotate the IP.

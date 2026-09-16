@@ -217,26 +217,37 @@ function xiproxslotip_ClientArea(array $params): array
 {
     // Proxy password tracks the WHMCS service password (deploy + Reset Password
     // set it), so showing it here is always in sync.
-    $vars = ['slotId' => '', 'slot' => null, 'panelUrl' => '', 'error' => '', 'password' => (string) ($params['password'] ?? '')];
+    $vars = ['slotId' => '', 'slot' => null, 'panelUrl' => '', 'error' => '', 'ssoError' => '', 'password' => (string) ($params['password'] ?? '')];
     try {
         $slotId = Helper::getSlotId($params);
         $vars['slotId'] = $slotId;
-        if ($slotId !== '') {
+        if ($slotId === '') {
+            Helper::log('ClientArea', 'no stored slot id for service ' . ($params['serviceid'] ?? ''), '');
+        } else {
             $client = Helper::client($params);
-            $vars['slot'] = $client->get('/slots/' . rawurlencode($slotId));
+            $slot = $client->get('/slots/' . rawurlencode($slotId));
+            $vars['slot'] = $slot;
 
             $customerId = Helper::getCustomerId($params);
+            if ($customerId === '' && !empty($slot['assignedSubuserId'])) {
+                $customerId = (string) $slot['assignedSubuserId'];
+                Helper::setCustomerId($params, $customerId);
+            }
             if ($customerId !== '') {
                 try {
                     $link = $client->post('/customers/' . rawurlencode($customerId) . '/login-link', []);
                     $vars['panelUrl'] = (string) ($link['url'] ?? '');
                 } catch (\Throwable $e) {
-                    // No link — button hides.
+                    $vars['ssoError'] = $e->getMessage();
+                    Helper::log('ClientArea', 'login-link', $e->getMessage());
                 }
+            } else {
+                $vars['ssoError'] = 'No white-label customer linked — run "Sync to White-label Panel" in admin.';
             }
         }
     } catch (\Throwable $e) {
         $vars['error'] = $e->getMessage();
+        Helper::log('ClientArea', 'GET /slots/' . ($vars['slotId'] ?? ''), $e->getMessage());
     }
 
     return ['templatefile' => 'overview', 'vars' => $vars];

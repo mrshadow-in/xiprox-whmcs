@@ -284,7 +284,7 @@ function xiproxcloud_ChangePackage(array $params): string
 function xiproxcloud_ClientArea(array $params): array
 {
     $vars = [
-        'vmId' => '', 'vm' => null, 'panelUrl' => '', 'error' => '',
+        'vmId' => '', 'vm' => null, 'panelUrl' => '', 'error' => '', 'ssoError' => '',
         // Credentials the customer manages with. Root password tracks the WHMCS
         // service password (deploy + reinstall set it), so it's always in sync.
         'username' => 'root',
@@ -293,23 +293,35 @@ function xiproxcloud_ClientArea(array $params): array
     try {
         $vmId = Helper::getRemoteId($params);
         $vars['vmId'] = $vmId;
-        if ($vmId !== '') {
+        if ($vmId === '') {
+            Helper::log('ClientArea', 'no stored VM id for service ' . ($params['serviceid'] ?? ''), '');
+        } else {
             $client = Helper::client($params);
-            $vars['vm'] = $client->get('/vms/' . rawurlencode($vmId));
+            $vm = $client->get('/vms/' . rawurlencode($vmId));
+            $vars['vm'] = $vm;
 
-            // Mint a fresh one-time SSO link for the "Open Panel" button.
+            // Prefer the stored customer id; self-heal from the VM's assignment
+            // (covers services linked via Sync User before this ran).
             $customerId = Helper::getCustomerId($params);
+            if ($customerId === '' && !empty($vm['assignedCustomerId'])) {
+                $customerId = (string) $vm['assignedCustomerId'];
+                Helper::setCustomerId($params, $customerId);
+            }
             if ($customerId !== '') {
                 try {
                     $link = $client->post('/customers/' . rawurlencode($customerId) . '/login-link', []);
                     $vars['panelUrl'] = (string) ($link['url'] ?? '');
                 } catch (\Throwable $e) {
-                    // No panel link (domain not active yet) — button just hides.
+                    $vars['ssoError'] = $e->getMessage();
+                    Helper::log('ClientArea', 'login-link', $e->getMessage());
                 }
+            } else {
+                $vars['ssoError'] = 'No white-label customer linked — run "Sync to White-label Panel" in admin.';
             }
         }
     } catch (\Throwable $e) {
         $vars['error'] = $e->getMessage();
+        Helper::log('ClientArea', 'GET /vms/' . ($vars['vmId'] ?? ''), $e->getMessage());
     }
 
     return [
