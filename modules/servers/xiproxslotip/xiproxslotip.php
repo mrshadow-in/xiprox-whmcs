@@ -23,6 +23,12 @@ if (!defined('WHMCS')) {
 require_once __DIR__ . '/../xiproxcloud/lib/ApiClient.php';
 require_once __DIR__ . '/../xiproxcloud/lib/Helper.php';
 
+/** Module-log entry under this module's name. */
+function xiproxslotip_log(string $action, $request, $response): void
+{
+    Helper::log($action, $request, $response, 'xiproxslotip');
+}
+
 /** Declared ConfigOptions order (for Helper::setting index resolution). */
 function xiproxslotip_settingOrder(): array
 {
@@ -81,7 +87,7 @@ function xiproxslotip_ConfigOptions(): array
         }
     } catch (\Throwable $e) {
         $hint = 'Couldn\'t reach the panel: ' . $e->getMessage();
-        Helper::log('ConfigOptions', 'GET /slot-plans', $e->getMessage());
+        xiproxslotip_log('ConfigOptions', 'GET /slot-plans', $e->getMessage());
     }
 
     if ($hint !== '' && ($planField['Type'] ?? '') === 'text') {
@@ -124,10 +130,17 @@ function xiproxslotip_TestConnection(array $params): array
 function xiproxslotip_CreateAccount(array $params): string
 {
     try {
-        if (Helper::getSlotId($params) !== '') {
-            return 'success';
-        }
         $client = Helper::client($params);
+        $existing = Helper::getSlotId($params);
+        if ($existing !== '') {
+            // Retries never deploy twice, unless the stored Slot IP is gone on the panel
+            // (setup failed and was refunded, or it was deleted): then deploy a fresh one.
+            if (!Helper::isGone($client, '/slots/' . rawurlencode($existing))) {
+                return 'success';
+            }
+            xiproxslotip_log('CreateAccount', 'stored slot ' . $existing . ' is gone on the panel', 'deploying a new one');
+            Helper::setSlotId($params, '');
+        }
         $order = xiproxslotip_settingOrder();
 
         $planId = (string) Helper::setting($params, 'Plan', '', $order);
@@ -161,7 +174,7 @@ function xiproxslotip_CreateAccount(array $params): string
         }
 
         $res = $client->post('/slots', $body);
-        Helper::log('CreateAccount', $body, $res);
+        xiproxslotip_log('CreateAccount', $body, $res);
 
         $slotId = (string) ($res['slotId'] ?? '');
         if ($slotId === '') {
@@ -171,10 +184,22 @@ function xiproxslotip_CreateAccount(array $params): string
         Helper::setIpPool($params, $ipPoolId); // remember the deploy pool (drives rotate-on-upgrade)
         if (!empty($res['customer']['id'])) {
             Helper::setCustomerId($params, (string) $res['customer']['id']);
+        } else {
+            // Deploy couldn't create the customer (usually: already exists) —
+            // link the existing one now so no manual "Sync User" is needed.
+            try {
+                $cid = Helper::ensureWhitelabelCustomer($params, $client);
+                if ($cid !== '') {
+                    $client->post('/slots/' . rawurlencode($slotId) . '/assign', ['customerId' => $cid]);
+                    Helper::setCustomerId($params, $cid);
+                }
+            } catch (\Throwable $e) {
+                xiproxslotip_log('CreateAccount', 'auto-link customer', $e->getMessage());
+            }
         }
         return 'success';
     } catch (\Throwable $e) {
-        Helper::log('CreateAccount:error', $params['serviceid'] ?? '', $e->getMessage());
+        xiproxslotip_log('CreateAccount:error', $params['serviceid'] ?? '', $e->getMessage());
         return $e->getMessage();
     }
 }
@@ -197,7 +222,7 @@ function xiproxslotip_TerminateAccount(array $params): string
             return 'success';
         }
         $res = Helper::client($params)->delete('/slots/' . rawurlencode($slotId));
-        Helper::log('TerminateAccount', $slotId, $res);
+        xiproxslotip_log('TerminateAccount', $slotId, $res);
         Helper::setSlotId($params, '');
         return 'success';
     } catch (ApiException $e) {
@@ -213,20 +238,53 @@ function xiproxslotip_TerminateAccount(array $params): string
 
 // ── Client area ──────────────────────────────────────────────────────────
 
+function xiproxslotip_statusClass(string $status): string
+{
+    switch ($status) {
+        case 'active': return 'success';
+        case 'suspended': return 'danger';
+        case 'stopped': return 'warning';
+        case 'provisioning': return 'info';
+        default: return 'default';
+    }
+}
+
 function xiproxslotip_ClientArea(array $params): array
 {
-    // Proxy password tracks the WHMCS service password (deploy + Reset Password
-    // set it), so showing it here is always in sync.
-    $vars = ['slotId' => '', 'slot' => null, 'panelUrl' => '', 'error' => '', 'ssoError' => '', 'password' => (string) ($params['password'] ?? '')];
+    // All values precomputed in PHP; the template does no formatting.
+    // Proxy password tracks the WHMCS service password (deploy + Reset Password).
+    $vars = [
+        'hasSlot' => false,
+        'error' => '', 'ssoError' => '', 'panelUrl' => '',
+        'hostname' => '', 'status' => '', 'statusClass' => 'default',
+        'endpoint' => '', 'proxyUsername' => '', 'planName' => '', 'nextRenewal' => '',
+        'password' => (string) ($params['password'] ?? ''),
+    ];
     try {
         $slotId = Helper::getSlotId($params);
-        $vars['slotId'] = $slotId;
         if ($slotId === '') {
-            Helper::log('ClientArea', 'no stored slot id for service ' . ($params['serviceid'] ?? ''), '');
+            $vars['error'] = 'This service is not provisioned yet.';
+            xiproxslotip_log('ClientArea', 'no stored slot id for service ' . ($params['serviceid'] ?? ''), '');
         } else {
             $client = Helper::client($params);
             $slot = $client->get('/slots/' . rawurlencode($slotId));
-            $vars['slot'] = $slot;
+
+            $vars['hasSlot'] = true;
+            $vars['hostname'] = (string) ($slot['hostname'] ?? '');
+            $vars['status'] = (string) ($slot['status'] ?? '');
+            $vars['statusClass'] = xiproxslotip_statusClass($vars['status']);
+            $vars['proxyUsername'] = (string) ($slot['proxyUsername'] ?? '');
+            $vars['planName'] = (string) ($slot['plan']['name'] ?? ($slot['plan']['sku'] ?? ''));
+            $ip = (string) ($slot['ip'] ?? '');
+            if ($ip !== '') {
+                $vars['endpoint'] = $ip . ':' . (int) ($slot['proxyPort'] ?? 3128);
+            }
+            if (!empty($slot['nextChargeAt'])) {
+                $ts = strtotime((string) $slot['nextChargeAt']);
+                if ($ts) {
+                    $vars['nextRenewal'] = date('j M Y', $ts);
+                }
+            }
 
             $customerId = Helper::getCustomerId($params);
             if ($customerId === '' && !empty($slot['assignedSubuserId'])) {
@@ -239,15 +297,15 @@ function xiproxslotip_ClientArea(array $params): array
                     $vars['panelUrl'] = (string) ($link['url'] ?? '');
                 } catch (\Throwable $e) {
                     $vars['ssoError'] = $e->getMessage();
-                    Helper::log('ClientArea', 'login-link', $e->getMessage());
+                    xiproxslotip_log('ClientArea', 'login-link', $e->getMessage());
                 }
             } else {
                 $vars['ssoError'] = 'No white-label customer linked — run "Sync to White-label Panel" in admin.';
             }
         }
     } catch (\Throwable $e) {
-        $vars['error'] = $e->getMessage();
-        Helper::log('ClientArea', 'GET /slots/' . ($vars['slotId'] ?? ''), $e->getMessage());
+        $vars['error'] = ($e instanceof ApiException && $e->getCode() === 404) ? Helper::GONE_MESSAGE : $e->getMessage();
+        xiproxslotip_log('ClientArea', 'GET /slots', $e->getMessage());
     }
 
     return ['tabOverviewReplacementTemplate' => 'templates/overview', 'templateVariables' => $vars];
@@ -295,7 +353,7 @@ function xiproxslotip_SyncUser(array $params): string
         }
         $client->post('/slots/' . rawurlencode($slotId) . '/assign', ['customerId' => $customerId]);
         Helper::setCustomerId($params, $customerId);
-        Helper::log('SyncUser', $slotId, ['customerId' => $customerId]);
+        xiproxslotip_log('SyncUser', $slotId, ['customerId' => $customerId]);
         return 'success';
     } catch (\Throwable $e) {
         return $e->getMessage();
@@ -319,7 +377,7 @@ function xiproxslotip_ChangePackage(array $params): string
         if ($newPool !== '' && $newPool !== Helper::getIpPool($params)) {
             Helper::client($params)->post('/slots/' . rawurlencode($slotId) . '/action', ['action' => 'rotate-ip', 'ipPoolId' => $newPool]);
             Helper::setIpPool($params, $newPool);
-            Helper::log('ChangePackage', 'rotate-ip', ['slotId' => $slotId, 'pool' => $newPool]);
+            xiproxslotip_log('ChangePackage', 'rotate-ip', ['slotId' => $slotId, 'pool' => $newPool]);
         }
         return 'success';
     } catch (\Throwable $e) {
@@ -355,7 +413,7 @@ function xiproxslotip_ResetUser(array $params): string
             'username' => $username,
             'password' => (string) ($params['password'] ?? ''),
         ]);
-        Helper::log('ResetUser', $slotId, $res);
+        xiproxslotip_log('ResetUser', $slotId, $res);
         return 'success';
     } catch (\Throwable $e) {
         return $e->getMessage();
@@ -374,7 +432,7 @@ function xiproxslotip_ResetPassword(array $params): string
             'action' => 'reset-password',
             'password' => (string) ($params['password'] ?? ''),
         ]);
-        Helper::log('ResetPassword', $slotId, $res);
+        xiproxslotip_log('ResetPassword', $slotId, $res);
         return 'success';
     } catch (\Throwable $e) {
         return $e->getMessage();
@@ -409,7 +467,7 @@ function xiproxslotip_action(array $params, string $action, string $logLabel): s
             return 'This service has no provisioned slot yet.';
         }
         $res = Helper::client($params)->post('/slots/' . rawurlencode($slotId) . '/action', ['action' => $action]);
-        Helper::log($logLabel, ['slotId' => $slotId, 'action' => $action], $res);
+        xiproxslotip_log($logLabel, ['slotId' => $slotId, 'action' => $action], $res);
         return 'success';
     } catch (ApiException $e) {
         if ($e->getApiCode() === 'conflict') {

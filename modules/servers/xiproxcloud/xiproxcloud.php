@@ -55,12 +55,18 @@ function xiproxcloud_ConfigOptions(): array
         'Description' => 'Reseller plan id — paste from GET /api/v1/reseller/plans.',
     ];
     $hint = '';
+    $catalog = [];
 
     try {
         $client = Helper::clientFromAnyServer('xiproxcloud');
         if (!$client) {
             $hint = 'No xiProx server found — add one under Setup › Products/Services › Servers (Type: xiProx Cloud), then reopen this product.';
         } else {
+            try {
+                $catalog = $client->get('/catalog'); // OS templates + IP pools for the two defaults below
+            } catch (\Throwable $e) {
+                Helper::log('ConfigOptions', 'GET /catalog', $e->getMessage());
+            }
             $plans = $client->get('/plans');
             $opts = [];
             foreach ($plans as $p) {
@@ -95,21 +101,46 @@ function xiproxcloud_ConfigOptions(): array
         $planField['Description'] .= ' — ' . $hint;
     }
 
+    $osField = [
+        'FriendlyName' => 'Default OS',
+        'Type' => 'text',
+        'Size' => '25',
+        'Default' => 'ubuntu-2404',
+        'Description' => 'OS template id used when the order has no "OS Template" field (e.g. ubuntu-2404, debian-12, windows-2022).',
+    ];
+    $poolField = [
+        'FriendlyName' => 'Default IP Pool',
+        'Type' => 'text',
+        'Size' => '40',
+        'Description' => 'Optional IP pool id used when the order has no "IP Pool" field. Blank = the panel picks the cheapest pool.',
+    ];
+    // With the panel reachable, both defaults become dropdowns from GET /catalog.
+    $os = [];
+    foreach (($catalog['osTemplates'] ?? []) as $t) {
+        if (is_array($t) && !empty($t['id'])) {
+            $os[$t['id']] = ($t['name'] ?? $t['id']) . ' (' . $t['id'] . ')';
+        }
+    }
+    if ($os) {
+        $osField = ['FriendlyName' => 'Default OS', 'Type' => 'dropdown', 'Options' => $os, 'Default' => 'ubuntu-2404',
+            'Description' => 'Used when the order has no "OS Template" field.'];
+    }
+    $pools = [];
+    foreach (($catalog['ipPools'] ?? []) as $pl) {
+        if (is_array($pl) && !empty($pl['id'])) {
+            $pools[$pl['id']] = ($pl['name'] ?? $pl['id']) . ' — ' . Helper::rupees((int) ($pl['priceMonthlyPaisa'] ?? 0)) . '/mo'
+                . (!empty($pl['series']) ? ' [' . implode(', ', (array) $pl['series']) . ']' : '');
+        }
+    }
+    if ($pools) {
+        $poolField = ['FriendlyName' => 'Default IP Pool', 'Type' => 'dropdown', 'Options' => ['' => 'Cheapest pool (panel picks)'] + $pools,
+            'Description' => 'Used when the order has no "IP Pool" field. A pool must allow the plan series.'];
+    }
+
     return [
         'Plan' => $planField,
-        'Default OS' => [
-            'FriendlyName' => 'Default OS',
-            'Type' => 'text',
-            'Size' => '25',
-            'Default' => 'ubuntu-2404',
-            'Description' => 'OS template id used when the order has no "OS Template" field (e.g. ubuntu-2404, debian-12, windows-2022).',
-        ],
-        'Default IP Pool' => [
-            'FriendlyName' => 'Default IP Pool',
-            'Type' => 'text',
-            'Size' => '40',
-            'Description' => 'Optional IP pool id used when the order has no "IP Pool" field. Blank = the panel picks the cheapest pool.',
-        ],
+        'Default OS' => $osField,
+        'Default IP Pool' => $poolField,
     ];
 }
 
@@ -132,18 +163,24 @@ function xiproxcloud_TestConnection(array $params): array
 }
 
 /**
- * Provision a VM. Idempotent: if this service already has a panel VM id we do
- * nothing (survives WHMCS retries). Deploys from the reseller wallet and, when
- * the reseller has a white-label panel, creates + assigns the WHMCS customer so
- * they can log in via SSO.
+ * Provision a VM. Idempotent: if this service already has a live panel VM we do
+ * nothing (survives WHMCS retries). A stored VM that is gone on the panel (its
+ * setup failed and was refunded, or it was deleted) is replaced with a fresh
+ * deploy. Deploys from the reseller wallet and, when the reseller has a
+ * white-label panel, creates + assigns the WHMCS customer so they can log in via SSO.
  */
 function xiproxcloud_CreateAccount(array $params): string
 {
     try {
-        if (Helper::getRemoteId($params) !== '') {
-            return 'success'; // already provisioned
-        }
         $client = Helper::client($params);
+        $existing = Helper::getRemoteId($params);
+        if ($existing !== '') {
+            if (!Helper::isGone($client, '/vms/' . rawurlencode($existing))) {
+                return 'success'; // already provisioned
+            }
+            Helper::log('CreateAccount', 'stored VM ' . $existing . ' is gone on the panel', 'deploying a new one');
+            Helper::setRemoteId($params, '');
+        }
 
         $planId = (string) Helper::setting($params, 'Plan');
         if ($planId === '') {
@@ -186,16 +223,23 @@ function xiproxcloud_CreateAccount(array $params): string
         Helper::setIpPool($params, $ipPoolId); // remember the deploy pool (drives rotate-on-upgrade)
         if (!empty($res['customer']['id'])) {
             Helper::setCustomerId($params, (string) $res['customer']['id']);
+        } else {
+            // Deploy couldn't create the customer (usually: the email already
+            // exists as a white-label customer). Link the existing one now so no
+            // manual "Sync User" is needed.
+            try {
+                $cid = Helper::ensureWhitelabelCustomer($params, $client);
+                if ($cid !== '') {
+                    $client->post('/vms/' . rawurlencode($vmId) . '/assign', ['customerId' => $cid]);
+                    Helper::setCustomerId($params, $cid);
+                }
+            } catch (\Throwable $e) {
+                Helper::log('CreateAccount', 'auto-link customer', $e->getMessage());
+            }
         }
 
-        // Let the panel keep the VM alive on the reseller wallet; WHMCS drives
-        // the end-customer billing separately.
-        try {
-            $client->patch('/vms/' . rawurlencode($vmId), ['autoRenew' => true]);
-        } catch (\Throwable $e) {
-            // Non-fatal.
-        }
-
+        // Reseller VMs always auto-renew on the panel (reseller wallet); WHMCS
+        // drives the end-customer billing separately. Terminate = cancel now.
         return 'success';
     } catch (\Throwable $e) {
         Helper::log('CreateAccount:error', $params['serviceid'] ?? '', $e->getMessage());
@@ -213,6 +257,11 @@ function xiproxcloud_UnsuspendAccount(array $params): string
     return xiproxcloud_vmAction($params, 'start', 'UnsuspendAccount');
 }
 
+/**
+ * Cancel the VM now (prorated refund to the reseller wallet). The panel refuses
+ * this in the last 5 days of the VM's term — it renews, and can be cancelled
+ * after that; the error is shown on the WHMCS service so you can retry then.
+ */
 function xiproxcloud_TerminateAccount(array $params): string
 {
     try {
@@ -281,27 +330,66 @@ function xiproxcloud_ChangePackage(array $params): string
 
 // ── Client area ──────────────────────────────────────────────────────────
 
+function xiproxcloud_statusClass(string $status): string
+{
+    switch ($status) {
+        case 'active': return 'success';
+        case 'suspended': return 'danger';
+        case 'stopped': return 'warning';
+        case 'provisioning': return 'info';
+        default: return 'default';
+    }
+}
+
 function xiproxcloud_ClientArea(array $params): array
 {
+    // Everything is precomputed in PHP and passed as plain strings — the template
+    // does no math/formatting, so there's nothing for Smarty to choke on.
     $vars = [
-        'vmId' => '', 'vm' => null, 'panelUrl' => '', 'error' => '', 'ssoError' => '',
-        // Credentials the customer manages with. Root password tracks the WHMCS
-        // service password (deploy + reinstall set it), so it's always in sync.
+        'hasVm' => false,
+        'error' => '', 'ssoError' => '', 'panelUrl' => '',
+        'hostname' => '', 'status' => '', 'statusClass' => 'default',
+        'primaryIp' => '', 'os' => '', 'planName' => '',
+        'specsText' => '', 'bandwidthText' => '', 'nextRenewal' => '',
         'username' => 'root',
         'password' => (string) ($params['password'] ?? ''),
     ];
     try {
         $vmId = Helper::getRemoteId($params);
-        $vars['vmId'] = $vmId;
         if ($vmId === '') {
+            $vars['error'] = 'This service is not provisioned yet.';
             Helper::log('ClientArea', 'no stored VM id for service ' . ($params['serviceid'] ?? ''), '');
         } else {
             $client = Helper::client($params);
             $vm = $client->get('/vms/' . rawurlencode($vmId));
-            $vars['vm'] = $vm;
 
-            // Prefer the stored customer id; self-heal from the VM's assignment
-            // (covers services linked via Sync User before this ran).
+            $vars['hasVm'] = true;
+            $vars['hostname'] = (string) ($vm['hostname'] ?? '');
+            $vars['status'] = (string) ($vm['status'] ?? '');
+            $vars['statusClass'] = xiproxcloud_statusClass($vars['status']);
+            $vars['primaryIp'] = (string) ($vm['primaryIp'] ?? '');
+            $vars['os'] = (string) ($vm['osTemplate'] ?? '');
+            $vars['planName'] = (string) ($vm['plan']['name'] ?? ($vm['plan']['sku'] ?? ''));
+
+            $specs = $vm['specs'] ?? [];
+            if ($specs) {
+                $vars['specsText'] = (int) ($specs['vcpu'] ?? 0) . ' vCPU · '
+                    . rtrim(rtrim(number_format(((int) ($specs['ramMb'] ?? 0)) / 1024, 1), '0'), '.') . ' GB RAM · '
+                    . (int) ($specs['diskGb'] ?? 0) . ' GB disk';
+            }
+            $bw = $vm['bandwidth'] ?? [];
+            if (!empty($bw['allowanceGb'])) {
+                $usedGb = ((int) ($bw['ingressBytes'] ?? 0) + (int) ($bw['egressBytes'] ?? 0)) / 1073741824;
+                $vars['bandwidthText'] = number_format($usedGb, 2) . ' GB of ' . (int) $bw['allowanceGb'] . ' GB';
+            }
+            if (!empty($vm['nextChargeAt'])) {
+                $ts = strtotime((string) $vm['nextChargeAt']);
+                if ($ts) {
+                    $vars['nextRenewal'] = date('j M Y', $ts);
+                }
+            }
+
+            // Prefer the stored customer id; self-heal from the VM's assignment.
             $customerId = Helper::getCustomerId($params);
             if ($customerId === '' && !empty($vm['assignedCustomerId'])) {
                 $customerId = (string) $vm['assignedCustomerId'];
@@ -320,8 +408,8 @@ function xiproxcloud_ClientArea(array $params): array
             }
         }
     } catch (\Throwable $e) {
-        $vars['error'] = $e->getMessage();
-        Helper::log('ClientArea', 'GET /vms/' . ($vars['vmId'] ?? ''), $e->getMessage());
+        $vars['error'] = ($e instanceof ApiException && $e->getCode() === 404) ? Helper::GONE_MESSAGE : $e->getMessage();
+        Helper::log('ClientArea', 'GET /vms', $e->getMessage());
     }
 
     return [
@@ -337,6 +425,7 @@ function xiproxcloud_ClientAreaCustomButtonArray(): array
         'Start' => 'Start',
         'Stop' => 'Stop',
         'Restart' => 'Restart',
+        'Force Stop' => 'ForceStop',
         'Reinstall' => 'Reinstall',
     ];
 }
@@ -397,6 +486,12 @@ function xiproxcloud_Stop(array $params): string
 function xiproxcloud_Restart(array $params): string
 {
     return xiproxcloud_vmAction($params, 'restart', 'Restart');
+}
+
+/** Hard power-off, for a VM that ignores a normal Stop. */
+function xiproxcloud_ForceStop(array $params): string
+{
+    return xiproxcloud_vmAction($params, 'force-stop', 'ForceStop');
 }
 
 /** Reinstall keeps the current OS and resets root to the WHMCS service password. */

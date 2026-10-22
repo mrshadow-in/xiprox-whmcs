@@ -22,16 +22,19 @@ class ApiClient
     private string $baseUrl;
     private string $apiKey;
     private int $timeout;
+    private string $prefix;
 
-    public function __construct(string $hostname, string $apiKey, int $timeout = 30)
+    /** $prefix: '/api/v1/reseller' (VM + Slot IP modules) or '/api/v1/hosting' (web hosting module). */
+    public function __construct(string $hostname, string $apiKey, int $timeout = 30, string $prefix = '/api/v1/reseller')
     {
         $this->baseUrl = self::normalizeBase($hostname);
         $this->apiKey = trim($apiKey);
         $this->timeout = $timeout;
+        $this->prefix = $prefix;
     }
 
     /** Build a client straight from a WHMCS $params array. */
-    public static function fromParams(array $params): self
+    public static function fromParams(array $params, string $prefix = '/api/v1/reseller'): self
     {
         $host = $params['serverhostname'] ?? '';
         if ($host === '' && !empty($params['serverip'])) {
@@ -41,7 +44,7 @@ class ApiClient
         if (!empty($params['serversecure']) && !preg_match('#^https?://#i', $host)) {
             $host = 'https://' . $host;
         }
-        return new self((string) $host, (string) ($params['serverpassword'] ?? ''));
+        return new self((string) $host, (string) ($params['serverpassword'] ?? ''), 30, $prefix);
     }
 
     private static function normalizeBase(string $host): string
@@ -85,7 +88,7 @@ class ApiClient
      */
     private function request(string $method, string $path, ?array $body): array
     {
-        $url = $this->baseUrl . '/api/v1/reseller' . $path;
+        $url = $this->baseUrl . $this->prefix . $path;
 
         $headers = [
             'Authorization: Bearer ' . $this->apiKey,

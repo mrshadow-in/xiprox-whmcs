@@ -22,6 +22,10 @@ class Helper
     public const FIELD_SLOT_ID = 'xiProx Slot ID';
     public const FIELD_CUSTOMER_ID = 'xiProx Customer ID';
     public const FIELD_IP_POOL = 'xiProx IP Pool';
+    public const FIELD_HOSTING_ID = 'xiProx Hosting ID';
+
+    /** Client-area text for a stored id the panel no longer has (setup failed + refunded, or removed). */
+    public const GONE_MESSAGE = 'This service is no longer on the panel: its setup failed (the charge was refunded) or it was removed. Please contact support to have it set up again.';
 
     public static function client(array $params): ApiClient
     {
@@ -34,7 +38,7 @@ class Helper
      * server whose type is this module and decrypts its stored API key. Returns
      * null when none is usable, so callers can fall back to a text field.
      */
-    public static function clientFromAnyServer(?string $moduleType = 'xiproxcloud'): ?ApiClient
+    public static function clientFromAnyServer(?string $moduleType = 'xiproxcloud', string $prefix = '/api/v1/reseller'): ?ApiClient
     {
         $server = Capsule::table('tblservers')
             ->where('type', $moduleType)->where('disabled', 0)
@@ -59,7 +63,7 @@ class Helper
         if ($apiKey === '') {
             return null;
         }
-        return new ApiClient((string) $host, $apiKey);
+        return new ApiClient((string) $host, $apiKey, 30, $prefix);
     }
 
     // ── Module settings (the module's own ConfigOptions) ──────────────────
@@ -130,6 +134,25 @@ class Helper
         self::writeField($params, self::FIELD_VM_ID, $value);
     }
 
+    /**
+     * Is the panel record at $path gone (HTTP 404)? A VM / Slot IP whose setup fails is
+     * rolled back (deleted + refunded) AFTER WHMCS's Create has already returned, so a
+     * stored id can point at nothing. Any other error is re-thrown: "can't tell" is never
+     * "gone".
+     */
+    public static function isGone(ApiClient $client, string $path): bool
+    {
+        try {
+            $client->get($path);
+            return false;
+        } catch (ApiException $e) {
+            if ($e->getCode() === 404) {
+                return true;
+            }
+            throw $e;
+        }
+    }
+
     public static function getSlotId(array $params): string
     {
         return self::readField($params, self::FIELD_SLOT_ID);
@@ -158,6 +181,16 @@ class Helper
     public static function setCustomerId(array $params, string $value): void
     {
         self::writeField($params, self::FIELD_CUSTOMER_ID, $value);
+    }
+
+    public static function getHostingId(array $params): string
+    {
+        return self::readField($params, self::FIELD_HOSTING_ID);
+    }
+
+    public static function setHostingId(array $params, string $value): void
+    {
+        self::writeField($params, self::FIELD_HOSTING_ID, $value);
     }
 
     private static function fieldId(int $productId, string $name): int
@@ -248,11 +281,11 @@ class Helper
         return '₹' . number_format($paisa / 100, 2);
     }
 
-    /** Log a module action to the WHMCS module log (key is never logged). */
-    public static function log(string $action, $request, $response): void
+    /** Log a module action to the WHMCS module log under $module (key is never logged). */
+    public static function log(string $action, $request, $response, string $module = 'xiproxcloud'): void
     {
         if (function_exists('logModuleCall')) {
-            logModuleCall('xiproxcloud', $action, $request, $response);
+            logModuleCall($module, $action, $request, $response);
         }
     }
 }

@@ -1,24 +1,30 @@
 # xiProx for WHMCS — Installation & Setup
 
-Sell xiProx **VMs** and **Slot IPs** through WHMCS. The modules talk only to
-your **reseller panel API** (`/api/v1/reseller/*`) with your reseller API key —
-so **a reseller account is required** ("No reseller panel → no WHMCS support").
+Sell xiProx **VMs**, **Slot IPs** and **Web Hosting** through WHMCS. The VM and
+Slot IP modules talk only to your **reseller panel API** (`/api/v1/reseller/*`)
+with your managed reseller API key — so **a reseller account is required** ("No
+reseller panel → no WHMCS support"). The hosting module uses `/api/v1/hosting/*`
+and a web-reseller hosting plan — see [Web Hosting](#web-hosting-web-resellers).
 
 - **Tested with:** WHMCS **8.8**, PHP **8.1**
 - **Modules:**
-  - `xiproxcloud` — VMs (Start / Stop / Restart / Reinstall / Rotate IP + panel SSO)
-  - `xiproxslotip` — Slot IPs (Start / Stop / Reset user / Reset password / Rotate IP)
+  - `xiproxcloud` — VMs (Start / Stop / Restart / Force Stop / Reinstall + panel SSO; IP rotation via Upgrade)
+  - `xiproxslotip` — Slot IPs (Start / Stop / Reset user / Reset password + panel SSO; IP rotation via Upgrade)
+  - `xiproxhosting` — Web Hosting customer accounts (client area, Hosting Panel SSO, usage)
+- `xiproxcloud/` holds the shared client library — install it even if you only sell Slot IPs or hosting.
 - Slot IPs deployed via WHMCS are **charged to your reseller wallet**, not the customer's.
 
 ---
 
 ## 1. In the xiProx reseller panel → **API** tab
 
-Everything is managed for you under **Reseller → API → WHMCS API** (you do NOT
+Everything is managed for you under **Reseller → API → WHMCS** (you do NOT
 use the generic API keys in Settings):
 
-1. **Generate WHMCS API Key** — click it. The key is shown **once**; copy it.
-   (This is a managed, reseller-scoped key.)
+1. **Generate API Key** — click it. The key is shown **once**; copy it.
+   (A managed key with the `reseller:*` scopes plus `hosting:read` /
+   `hosting:write`; the same key works for Paymenter and Billmora. Keys made
+   before hosting support lack the hosting scopes — **Regenerate** to sell hosting.)
 2. **Suspension webhook:**
    - Enter your **WHMCS webhook URL**:
      `https://<your-whmcs>/modules/servers/xiproxcloud/webhook.php` → **Save**.
@@ -27,8 +33,8 @@ use the generic API keys in Settings):
 
 Keep the **API key** and the **webhook salt** — you'll paste both into WHMCS next.
 
-> API equivalents (if you prefer automation): `POST /api/v1/reseller` key mgmt is
-> handled in-panel; webhook via `PUT /api/v1/reseller/whmcs`
+> API equivalents (if you prefer automation): the key itself is managed in-panel
+> only; the webhook via `PUT /api/v1/reseller/whmcs`
 > (`{ "callbackUrl": "…", "regenerateSalt": true }`) and `GET` to read the salt.
 
 ---
@@ -79,7 +85,8 @@ products at that group.
   (`GET /plans` or `/slot-plans`). If WHMCS can't reach the panel while editing,
   it falls back to a text field — paste the plan id.
 - **Default OS / Default IP Pool** (VM) or **Default IP Pool / Default Username**
-  (Slot IP): used when the order form doesn't supply those values.
+  (Slot IP): used when the order form doesn't supply those values. For VMs both
+  are dropdowns filled from `GET /catalog` when the panel is reachable.
 
 ### Let customers choose (optional but recommended)
 
@@ -128,7 +135,8 @@ WHMCS learns about it two ways (belt and braces):
 1. **Signed webhook** → `webhook.php` (HMAC-verified with your salt, ±5 min
    replay window) flips the service to Suspended/Active instantly.
 2. **Cron poll** → `hooks.php` reconciles each service against the panel on the
-   daily cron, and **warns you in the Activity Log when your wallet is low** —
+   WHMCS cron (`AfterCronJob`, every cron run), and **warns you in the Activity
+   Log when your wallet is low** —
    before customers are affected.
 
 Top the wallet up and the panel emits `vm.resumed`; the service reactivates.
@@ -140,8 +148,8 @@ Top the wallet up and the panel emits `vm.resumed`; the service reactivates.
 - **Client area (customer):** status, IP, specs, **username + password** (with a
   Show toggle — the root/proxy password tracks the WHMCS service password),
   **Open Control Panel** (one-time SSO), and the action buttons: VM →
-  Start / Stop / Restart / Reinstall; Slot IP → Start / Stop / Reset user /
-  Reset password.
+  Start / Stop / Restart / Force Stop / Reinstall; Slot IP → Start / Stop /
+  Reset user / Reset password.
 - **Rotate IP is NOT an instant button** — it's done through the **Upgrade/Config
   path**. Make **`IP Pool`** a configurable option on the product; when the
   customer changes it via *Upgrade/Downgrade Options* and pays, the module
@@ -152,6 +160,11 @@ Top the wallet up and the panel emits `vm.resumed`; the service reactivates.
   deployed **before** you set up your white-label panel — it creates (or finds)
   the customer on your panel and assigns this VM/slot to them, so they get panel
   SSO. Idempotent and safe to click again.
+- **Renewal & termination:** reseller VMs always auto-renew from your reseller
+  wallet at the end of their term. **Terminate** cancels the VM now (prorated
+  refund) — except in the **last 5 days** of its term, when the panel refuses it
+  (it renews; terminate after that). Set WHMCS to terminate unpaid services
+  well before the panel's renewal date, or use the API's `?at=end` cancel.
 
 ## 7. Test it end to end
 
@@ -163,6 +176,36 @@ Top the wallet up and the panel emits `vm.resumed`; the service reactivates.
 
 ---
 
+## Web Hosting (web resellers)
+
+For a xiProx **web-reseller hosting plan** (not the VM reseller programme):
+
+1. In xiProx, open your hosting account → **Reseller Centre** and create your
+   packages. Your hosting plan must include the *API / WHMCS* privilege.
+2. **API key:** if you are also a VM reseller, use the managed key from
+   Reseller → API (regenerate it if it predates hosting support). Otherwise
+   create one under Settings → API keys with **Web Hosting read + write**.
+3. Copy `modules/servers/xiproxhosting/` (and `xiproxcloud/`, whose client
+   library it shares) into WHMCS.
+4. **Servers → Add New Server**: Module *xiProx Web Hosting*, hostname = your
+   xiProx panel host, password = the API key. *Test Connection* lists your
+   web-reseller account(s) and checks the plan's API access.
+5. **Products**: type *Hosting Account*, module *xiProx Web Hosting*, pick the
+   **Package** from the live dropdown. Require a domain on order.
+6. **Passwords:** the panel requires **10–128 characters** with no `:` or line
+   breaks. Create and Change Password refuse shorter WHMCS passwords with a clear
+   error — raise WHMCS's generated password length if needed.
+7. WHMCS's daily cron runs **UsageUpdate** (disk + bandwidth per service, matched
+   by the stored *xiProx Hosting ID*).
+
+The client area shows the domain, username, status, disk and bandwidth, and a
+**Login to Hosting Panel** button that lands the client in their own Hosting
+Panel — on your branded panel domain once it's verified in the Reseller Centre.
+**Create** is safe to retry: if the panel already hosts that domain on your
+reseller account (a lost response), the module adopts that account.
+
+---
+
 ## Object Storage
 
 Planned. A stub lives at [`OBJECT_STORAGE.md`](OBJECT_STORAGE.md); the module
@@ -171,7 +214,8 @@ will ship here when the reseller Object Storage API lands.
 ## Troubleshooting
 
 - **Test Connection fails:** check the hostname (panel URL) and that the API key
-  has `reseller:*` scopes and the account is active.
+  is the managed key from Reseller → API (or, for hosting only, a key with the
+  `hosting:*` scopes) and the account is active.
 - **Plan dropdown is a text box:** WHMCS couldn't reach the panel while editing
   the product — verify the server, then paste the plan id manually.
 - **Webhook rejected (401):** the Access Hash in WHMCS must equal the panel's
